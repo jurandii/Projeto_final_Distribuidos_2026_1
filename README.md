@@ -9,6 +9,10 @@ Aplicativo para pedidos e entrega de lanches.
 
 Garantir que o servidor atenda múltiplos clientes ao mesmo tempo e que o cliente não trave esperando resposta do servidor.
 
+# Setor TOLERÂNCIA A FALHAS
+
+Tratar o maior número possível de falhas (conexão, mensagem inválida, timeout, sem permissão, API externa indisponível e erros inesperados), dar feedback claro ao usuário e impedir que cliente ou servidor encerrem por um erro. Detalhes, uso e testes em [`tolerancia_falhas/README.md`](tolerancia_falhas/README.md).
+
 
 # Sobre o Projeto
 

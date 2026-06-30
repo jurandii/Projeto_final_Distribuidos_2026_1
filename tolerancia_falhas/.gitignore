@@ -1,0 +1,4 @@
+# Artefatos de runtime do setor de Tolerancia a Falhas (nao versionar)
+logs/
+__pycache__/
+*.pyc

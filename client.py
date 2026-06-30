@@ -3,6 +3,10 @@ import sys
 import threading
 import queue
 
+# SETOR TOLERANCIA A FALHAS: conexao resiliente, feedback claro de erro e
+# protecao contra encerramento abrupto do cliente.
+from tolerancia_falhas import tolerancia_falhas as tf
+
 # =========================================================================
 # SETOR: THREADS
 # Responsabilidade deste setor: impedir que o cliente fique bloqueado
@@ -59,25 +63,40 @@ def main():
     thread_recebe = threading.Thread(target=listen, daemon=True)
     thread_recebe.start()
 
-    menu()
+    # TOLERANCIA A FALHAS: o menu roda dentro de uma protecao. Se o canal
+    # cair no meio de uma operacao (servidor morto, conexao perdida) ou se o
+    # usuario apertar Ctrl+C, o cliente NAO encerra com um traceback feio:
+    # mostra uma mensagem clara e finaliza com seguranca no bloco finally.
+    try:
+        menu()
 
-    # TODO(AUTENTICACAO/PERMISSOES): apos validar login no servidor, decidir
-    # aqui se o usuario tem perfil "administrador" antes de chamar
-    # menu_admin(). Hoje a chamada foi removida do fluxo principal porque
-    # nao deve ser oferecida a qualquer usuario sem checagem de permissao.
-
-    conectado.clear()
-    thread_recebe.join(timeout=1)
+        # TODO(AUTENTICACAO/PERMISSOES): apos validar login no servidor,
+        # decidir aqui se o usuario tem perfil "administrador" antes de
+        # chamar menu_admin(). Hoje a chamada foi removida do fluxo principal
+        # porque nao deve ser oferecida a qualquer usuario sem checagem.
+    except (ConnectionError, BrokenPipeError, OSError) as exc:
+        tf.registrar_erro("cliente", exc, "canal perdido durante o menu")
+        print("\n[CLIENTE] Conexao com o servidor perdida. Encerrando com seguranca.")
+    except KeyboardInterrupt:
+        print("\n[CLIENTE] Encerrado pelo usuario.")
+    finally:
+        conectado.clear()
+        try:
+            if sock is not None:
+                sock.close()
+        except OSError:
+            pass
+        thread_recebe.join(timeout=1)
 
 
 def try_connection() -> socket.socket:
-    # tenta conectar a porta
+    # TOLERANCIA A FALHAS: em vez de uma unica tentativa que mata o programa,
+    # tentamos algumas vezes com feedback claro. Esgotadas as tentativas, o
+    # cliente sai com uma mensagem amigavel (e o erro fica registrado no log).
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect((server_address, port))
-        return s
-    except (ConnectionRefusedError, TimeoutError):
-        print("couldnt connect to server")
+        return tf.conectar_com_retentativa(server_address, port)
+    except tf.ErroAplicacao as exc:
+        print(f"\n[CLIENTE] {exc.mensagem_usuario}")
         sys.exit(1)
 
 
@@ -103,8 +122,14 @@ def listen():
             # Quem desenha na tela e a thread principal, no momento certo.
             fila_recebidas.put(packet)
 
-        except OSError:
-            # acontece quando o socket e fechado (ex.: pelo menu, ao sair)
+        except OSError as exc:
+            # Acontece quando o socket e fechado (ex.: pelo menu, ao sair) ou
+            # quando o canal cai. TOLERANCIA A FALHAS: registra e avisa o
+            # usuario via fila, sem derrubar o cliente com traceback.
+            if conectado.is_set():
+                tf.registrar_erro("cliente.listen", exc, "falha ao receber do servidor")
+                fila_recebidas.put("[conexao perdida com o servidor]")
+            conectado.clear()
             break
 
 
@@ -112,7 +137,12 @@ def mostrar_mensagens_pendentes():
     """Drena a fila e imprime tudo que o servidor mandou ate agora."""
     while not fila_recebidas.empty():
         msg = fila_recebidas.get()
-        print(f"\n[SERVIDOR] {msg}")
+        # TOLERANCIA A FALHAS: se o servidor devolveu uma resposta de erro do
+        # protocolo (ERRO|CODIGO|msg), exibimos de forma amigavel ao usuario.
+        if tf.e_resposta_de_erro(msg):
+            print(f"\n[ERRO DO SERVIDOR] {tf.descrever_erro_para_usuario(msg)}")
+        else:
+            print(f"\n[SERVIDOR] {msg}")
 
 
 def menu():

@@ -3,6 +3,9 @@ import sys
 import threading
 from processamento_lento.processamento_lento import despachar_processamento, PermissaoNegadaError
 
+# SETOR TOLERANCIA A FALHAS: rede de seguranca para erros do lado do servidor.
+from tolerancia_falhas import tolerancia_falhas as tf
+
 # =========================================================================
 # SETOR: THREADS
 # Responsabilidade deste setor: garantir que o servidor atenda MAIS DE UM
@@ -115,6 +118,10 @@ def atender_cliente(conn: socket.socket, endereco):
         threads_ativas += 1
         print(f"[SERVER] Threads ativas no momento: {threads_ativas}")
 
+    # TOLERANCIA A FALHAS: timeout de inatividade. Um cliente "pendurado"
+    # (travado/morto sem fechar a conexao) nao segura a thread para sempre.
+    conn.settimeout(tf.TIMEOUT_INATIVIDADE)
+
     try:
         while True:
             # --- LEITURA DE REDE ---
@@ -130,20 +137,50 @@ def atender_cliente(conn: socket.socket, endereco):
             print(f"[SERVER] [{endereco}] recebido: {texto!r} "
                   f"(thread={threading.current_thread().name})")
 
+            # TOLERANCIA A FALHAS: rejeita mensagens invalidas (ex.: grandes
+            # demais) com feedback claro, sem derrubar a conexao.
+            try:
+                tf.validar_mensagem(texto)
+            except tf.RequisicaoInvalidaError as exc:
+                tf.registrar_erro(f"server[{endereco}]", exc, "mensagem invalida recebida")
+                conn.sendall(tf.formatar_erro(exc.codigo, exc.mensagem_usuario).encode("utf-8"))
+                continue
+
             if exit_request(texto):
                 conn.sendall(b"OK: sessao encerrada no servidor.\n")
                 print(f"[SERVER] Encerramento pedido pelo cliente {endereco}.")
                 break
 
-            resposta = processar_requisicao(texto, conn, endereco)
+            # TOLERANCIA A FALHAS: o despacho roda dentro de uma "rede de
+            # seguranca". Qualquer excecao nao prevista vira uma resposta de
+            # erro padronizada (e registrada em log), em vez de matar esta
+            # thread e desconectar o cliente sem explicacao.
+            resposta = tf.processar_requisicao_segura(
+                processar_requisicao, texto, conn, endereco,
+                origem=f"server[{endereco}]",
+            )
             conn.sendall(resposta.encode("utf-8"))
 
+    except socket.timeout:
+        # Cliente inativo por tempo demais: encerra com feedback e libera a thread.
+        tf.registrar_evento(f"server[{endereco}]", "conexao encerrada por inatividade (timeout)")
+        try:
+            conn.sendall(
+                tf.formatar_erro(tf.ERRO_TIMEOUT, "Conexao encerrada por inatividade.").encode("utf-8")
+            )
+        except OSError:
+            pass
+        print(f"[SERVER] {endereco} desconectado por inatividade (timeout).")
     except (ConnectionResetError, ConnectionAbortedError, OSError) as exc:
-        # TODO(TOLERANCIA A FALHAS): este except cobre quedas abruptas de
-        # conexao. O setor de Tolerancia a Falhas deve revisar/expandir
-        # este tratamento (timeouts, mensagens malformadas, etc.) e decidir
-        # qual feedback padrao dar ao usuario nesses casos.
+        # Queda abrupta do canal (cliente caiu/foi morto). Registramos e
+        # seguimos: as demais threads/clientes continuam funcionando.
+        tf.registrar_erro(f"server[{endereco}]", exc, "conexao perdida")
         print(f"[SERVER] Conexão com {endereco} perdida ({exc}).")
+    except Exception as exc:
+        # Ultima barreira: nenhum erro inesperado pode derrubar o servidor
+        # sem registro. A thread morre de forma controlada e logada.
+        tf.registrar_erro(f"server[{endereco}]", exc, "erro inesperado na thread de atendimento")
+        print(f"[SERVER] Erro inesperado ao atender {endereco}: {exc}")
     finally:
         conn.close()
         with lock_threads:
