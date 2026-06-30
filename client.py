@@ -185,6 +185,7 @@ def menu():
         print("[2] depositar creditos\n")
         print("[3] historico de pedidos\n")
         print("[4] processamento lento\n")
+        print("[5] consultar endereco por CEP\n")
         print("[0] sair\n")
 
         op = input()
@@ -199,6 +200,8 @@ def menu():
                 historico()
             case "4":
                 menu_processamento_lento()
+            case "5":
+                consultar_cep()
             case "0":
                 enviar_comando("CLOSECONNECTION", "menu_sair")
                 conectado.clear()
@@ -267,6 +270,23 @@ def menu_admin():
     # perfil administrador. So deve ser chamada depois de confirmado que
     # o usuario logado tem permissao "administrador".
     pass
+
+def consultar_cep():
+    """
+    SETOR: INTEGRAÇÃO COM APIs (ViaCEP)
+    Solicita o CEP ao usuario, valida e encaminha ao servidor de forma assincrona.
+    Mantém o padrão de não bloqueio de interface delegando a resposta para a thread_recebe.
+    """
+    print("\n=== CONSULTA DE CEP ===")
+    cep = input("Digite o CEP (apenas 8 números): ").strip()
+    
+    # Validação local imediata de formato (8 dígitos numéricos)
+    if not cep.isdigit() or len(cep) != 8:
+        print("[CLIENTE] Formato inválido! O CEP precisa conter exatamente 8 dígitos numéricos.")
+        return
+        
+    sock.sendall(f"CEP|{cep}".encode("utf-8"))
+    print("Solicitação de endereço enviada. Aguardando resposta do servidor...")
 
 def menu_processamento_lento():
     print("\n=== PROCESSAMENTO LENTO ===")
